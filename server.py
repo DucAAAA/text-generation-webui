@@ -51,7 +51,25 @@ from modules.models_settings import (
     update_model_parameters
 )
 from modules.utils import gradio
+import requests
+import runpod
+from requests.adapters import HTTPAdapter, Retry
+from runpod.serverless.utils.rp_validator import validate
+from schemas.api import API_SCHEMA
+from schemas.chat import CHAT_SCHEMA
+from schemas.generate import GENERATE_SCHEMA
 
+BASE_URL = 'http://127.0.0.1:5000/api/v1'
+TIMEOUT = 600
+
+VALIDATION_SCHEMAS = {
+    'chat': CHAT_SCHEMA,
+    'generate': GENERATE_SCHEMA,
+}
+session = requests.Session()
+retries = Retry(total=10, backoff_factor=0.1, status_forcelist=[502, 503, 504])
+session.mount('http://', HTTPAdapter(max_retries=retries))
+import extensions.api.blocking_api as blocking_api
 
 def create_interface():
 
@@ -156,6 +174,78 @@ def create_interface():
         )
 
 
+def send_get_request(endpoint):
+    return session.get(
+        url=f'{BASE_URL}/{endpoint}',
+        timeout=TIMEOUT
+    )
+
+
+def send_post_request(endpoint, payload):
+    return session.post(
+        url=f'{BASE_URL}/{endpoint}',
+        json=payload,
+        timeout=TIMEOUT
+    )
+
+
+def validate_api(event):
+    if 'api' not in event['input']:
+        return {
+            'errors': '"api" is a required field in the "input" payload'
+        }
+
+    api = event['input']['api']
+
+    if type(api) is not dict:
+        return {
+            'errors': '"api" must be a dictionary containing "method" and "endpoint"'
+        }
+
+    api['endpoint'] = api['endpoint'].lstrip('/')
+
+    return validate(api, API_SCHEMA)
+
+
+def validate_payload(event):
+    method = event['input']['api']['method']
+    endpoint = event['input']['api']['endpoint']
+    payload = event['input']['payload']
+    validated_input = payload
+
+    return endpoint, event['input']['api']['method'], validated_input
+
+
+def handler(event):
+    validated_api = validate_api(event)
+
+    if 'errors' in validated_api:
+        return {
+            'error': validated_api['errors']
+        }
+
+    endpoint, method, validated_input = validate_payload(event)
+
+    if 'errors' in validated_input:
+        return {
+            'error': validated_input['errors']
+        }
+
+    payload = validated_input
+
+    try:
+        if method == 'GET':
+            response = send_get_request(endpoint)
+        elif method == 'POST':
+            response = send_post_request(endpoint, payload)
+    except Exception as e:
+        return {
+            'error': str(e)
+        }
+
+    return response.json()
+
+
 if __name__ == "__main__":
 
     # Load custom settings
@@ -225,14 +315,10 @@ if __name__ == "__main__":
             add_lora_to_model(shared.args.lora)
 
     shared.generation_lock = Lock()
+    blocking_api.start_server(5000, share=False, tunnel_id=None)
 
-    # Launch the web UI
-    create_interface()
-    while True:
-        time.sleep(0.5)
-        if shared.need_restart:
-            shared.need_restart = False
-            time.sleep(0.5)
-            shared.gradio['interface'].close()
-            time.sleep(0.5)
-            create_interface()
+    runpod.serverless.start(
+        {
+            'handler': handler
+        }
+    )

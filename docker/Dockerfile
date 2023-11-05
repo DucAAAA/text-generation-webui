@@ -71,7 +71,7 @@ RUN --mount=type=cache,target=/root/.cache/pip,rw \
     pip3 install -r requirements.txt; \
     done
 
-ENV CLI_ARGS=""
+ENV CLI_ARGS="--model TheBloke_WizardLM-13B-V1.2-GPTQ --wbits 4 --listen --auto-devices --api"
 
 EXPOSE ${CONTAINER_PORT:-7860} ${CONTAINER_API_PORT:-5000} ${CONTAINER_API_STREAM_PORT:-5005}
 CMD . /app/venv/bin/activate && python3 server.py ${CLI_ARGS}
